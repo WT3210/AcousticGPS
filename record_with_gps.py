@@ -1,106 +1,90 @@
-import os
-import time
-import argparse
 import serial
+import time
+import wave
+import os
+import threading
 from datetime import datetime
 
-def generate_gpx_header():
-    return '''<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="AcousticGPS" xmlns="http://www.topografix.com/GPX/1/1">
-  <trk><name>GPS Track</name><trkseg>'''
+# ---------- Config ----------
+LOG_DIR = "logs"
+DURATION_SECONDS = 60
+SAMPLE_RATE = 44100
+CHANNELS = 1
+WIDTH = 2  # bytes (16-bit)
+DEVICE = "plughw:0,0"  # Based on arecord -L
+SERIAL_PORT = "/dev/serial0"
 
-def generate_gpx_footer():
-    return '''</trkseg></trk></gpx>'''
+# ---------- Init ----------
+os.makedirs(LOG_DIR, exist_ok=True)
+now = datetime.now().strftime("%m%d_%H%M")
+filename_base = f"record_{now}"
+wav_path = os.path.join(LOG_DIR, f"{filename_base}.wav")
+gpx_path = os.path.join(LOG_DIR, f"{filename_base}.gpx")
 
-def parse_nmea_gprmc(nmea):
-    parts = nmea.strip().split(',')
-    if len(parts) < 12 or parts[2] != 'A':
-        return None
+# ---------- GPX Handling ----------
+gpx_header = '<?xml version="1.0" encoding="UTF-8"?>\n' + \
+             '<gpx version="1.1" creator="record_with_gps.py" xmlns="http://www.topografix.com/GPX/1/1">\n' + \
+             '  <trk>\n' + \
+             f'    <name>{filename_base}</name>\n' + \
+             '    <trkseg>\n'
+
+gpx_footer = '    </trkseg>\n  </trk>\n</gpx>\n'
+
+
+def parse_nmea_latlon(lat_str, lat_dir, lon_str, lon_dir):
+    lat = float(lat_str[:2]) + float(lat_str[2:]) / 60
+    lon = float(lon_str[:3]) + float(lon_str[3:]) / 60
+    if lat_dir == 'S':
+        lat = -lat
+    if lon_dir == 'W':
+        lon = -lon
+    return lat, lon
+
+
+def parse_gga(nmea_line):
     try:
-        raw_time = parts[1]
-        raw_date = parts[9]
-        timestamp = datetime.strptime(raw_date + raw_time, '%d%m%y%H%M%S').isoformat() + 'Z'
-        lat = float(parts[3][:2]) + float(parts[3][2:]) / 60.0
-        if parts[4] == 'S':
-            lat = -lat
-        lon = float(parts[5][:3]) + float(parts[5][3:]) / 60.0
-        if parts[6] == 'W':
-            lon = -lon
-        speed = float(parts[7]) * 0.514444  # knots to m/s
-        return timestamp, lat, lon, speed
-    except:
-        return None
+        parts = nmea_line.split(',')
+        if parts[0].endswith("GGA") and parts[6] != '0':
+            lat, lon = parse_nmea_latlon(parts[2], parts[3], parts[4], parts[5])
+            alt = float(parts[9])
+            return lat, lon, alt
+    except Exception:
+        pass
+    return None
 
-def parse_nmea_gpgga(nmea):
-    parts = nmea.strip().split(',')
-    if len(parts) < 15:
-        return None
-    try:
-        altitude = float(parts[9])
-        sat_count = int(parts[7])
-        return altitude, sat_count
-    except:
-        return None
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--duration', type=int, default=60)
-parser.add_argument('--output', type=str, default=None)
-args = parser.parse_args()
+# ---------- GPS Logger ----------
+def gps_logger():
+    print("📡 GPS 紀錄開始")
+    with open(gpx_path, 'w') as gpx_file:
+        gpx_file.write(gpx_header)
+        with serial.Serial(SERIAL_PORT, 9600, timeout=1) as ser:
+            start_time = time.time()
+            while time.time() - start_time < DURATION_SECONDS:
+                line = ser.readline().decode(errors='ignore').strip()
+                if line.startswith("$GPGGA"):
+                    data = parse_gga(line)
+                    if data:
+                        lat, lon, alt = data
+                        timestamp = datetime.utcnow().isoformat() + 'Z'
+                        gpx_file.write(f'      <trkpt lat="{lat}" lon="{lon}"><ele>{alt}</ele><time>{timestamp}</time></trkpt>\n')
+                        print(f"🛰 {timestamp} Lat: {lat:.6f}, Lon: {lon:.6f}, Alt: {alt:.1f} m")
+                time.sleep(1)
+        gpx_file.write(gpx_footer)
+    print("🛰 GPS 紀錄結束")
 
-output_path = args.output or f"./logs/record_{datetime.now().strftime('%m%d%H%M')}.gpx"
-os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
+# ---------- Audio Recorder ----------
+def record_audio():
+    print(f"🎙 開始錄音 {DURATION_SECONDS} 秒...")
+    os.system(f"arecord -D {DEVICE} -f S16_LE -r {SAMPLE_RATE} -c {CHANNELS} {wav_path} -d {DURATION_SECONDS}")
 
-print("📡 等待 GPS fix（最高 60 秒）...")
-fix_acquired = False
-fix_wait_start = time.time()
-while time.time() - fix_wait_start < 60:
-    line = ser.readline().decode(errors='ignore')
-    if line.startswith('$GPRMC'):
-        parsed = parse_nmea_gprmc(line)
-        if parsed:
-            fix_acquired = True
-            print("✅ GPS fix 成功！開始紀錄...")
-            break
-if not fix_acquired:
-    print("❌ GPS fix 逾時，取消 GPX 紀錄")
-    exit()
 
-start_time = time.time()
-points = []
-last_alt = None
-last_sat = None
-print("🔴 錄製中...")
-
-while time.time() - start_time < args.duration:
-    line = ser.readline().decode(errors='ignore')
-    elapsed = int(time.time() - start_time)
-
-    if line.startswith('$GPRMC'):
-        parsed = parse_nmea_gprmc(line)
-        if parsed:
-            timestamp, lat, lon, speed = parsed
-            pt = f'<trkpt lat="{lat:.6f}" lon="{lon:.6f}"><time>{timestamp}</time><speed>{speed:.2f}</speed></trkpt>'
-            points.append(pt)
-
-            print(f"🕐 秒數：{elapsed}s | 📍 {lat:.5f}, {lon:.5f} | 🚀 {speed:.2f} m/s", end='')
-            if last_alt is not None and last_sat is not None:
-                print(f" | ⛰ {last_alt:.1f} m | 📶 衛星：{last_sat}", end='')
-            print()
-
-    elif line.startswith('$GPGGA'):
-        alt_sat = parse_nmea_gpgga(line)
-        if alt_sat:
-            last_alt, last_sat = alt_sat
-
-if not points:
-    print("⚠️ 沒有獲得任何 GPS 資料，GPX 將不儲存")
-    exit()
-
-with open(output_path, 'w') as f:
-    f.write(generate_gpx_header() + '\n')
-    f.write('\n'.join(points))
-    f.write('\n' + generate_gpx_footer())
-
-print(f"✅ 已儲存 GPX：{output_path}")
+# ---------- Main ----------
+if __name__ == '__main__':
+    print("🟢 啟動錄音 + GPS 記錄")
+    gps_thread = threading.Thread(target=gps_logger)
+    gps_thread.start()
+    record_audio()
+    gps_thread.join()
+    print("✅ 錄音與 GPS 紀錄完成")
