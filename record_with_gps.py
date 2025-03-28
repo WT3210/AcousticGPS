@@ -40,9 +40,25 @@ output_path = args.output or f"./logs/record_{datetime.now().strftime('%m%d%H%M'
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
 ser = serial.Serial('/dev/serial0', baudrate=9600, timeout=1)
+
+print("📡 等待 GPS fix（最高 60 秒）...")
+fix_acquired = False
+fix_wait_start = time.time()
+while time.time() - fix_wait_start < 60:
+    line = ser.readline().decode(errors='ignore')
+    if line.startswith('$GPRMC'):
+        parsed = parse_nmea_gprmc(line)
+        if parsed:
+            fix_acquired = True
+            print("✅ GPS fix 成功！開始紀錄...")
+            break
+if not fix_acquired:
+    print("❌ GPS fix 逾時，取消 GPX 紀錄")
+    exit()
+
+# 開始正式記錄軌跡點
 start_time = time.time()
 points = []
-
 while time.time() - start_time < args.duration:
     line = ser.readline().decode(errors='ignore')
     if line.startswith('$GPRMC'):
@@ -51,6 +67,10 @@ while time.time() - start_time < args.duration:
             timestamp, lat, lon, speed = parsed
             pt = f'<trkpt lat="{lat:.6f}" lon="{lon:.6f}"><time>{timestamp}</time><speed>{speed:.2f}</speed></trkpt>'
             points.append(pt)
+
+if not points:
+    print("⚠️ 沒有獲得任何 GPS 資料，GPX 將不儲存")
+    exit()
 
 with open(output_path, 'w') as f:
     f.write(generate_gpx_header() + '\n')
