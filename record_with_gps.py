@@ -31,6 +31,17 @@ def parse_nmea_gprmc(nmea):
     except:
         return None
 
+def parse_nmea_gpgga(nmea):
+    parts = nmea.strip().split(',')
+    if len(parts) < 15:
+        return None
+    try:
+        altitude = float(parts[9])
+        sat_count = int(parts[7])
+        return altitude, sat_count
+    except:
+        return None
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--duration', type=int, default=60)
 parser.add_argument('--output', type=str, default=None)
@@ -56,17 +67,32 @@ if not fix_acquired:
     print("❌ GPS fix 逾時，取消 GPX 紀錄")
     exit()
 
-# 開始正式記錄軌跡點
 start_time = time.time()
 points = []
+last_alt = None
+last_sat = None
+print("🔴 錄製中...")
+
 while time.time() - start_time < args.duration:
     line = ser.readline().decode(errors='ignore')
+    elapsed = int(time.time() - start_time)
+
     if line.startswith('$GPRMC'):
         parsed = parse_nmea_gprmc(line)
         if parsed:
             timestamp, lat, lon, speed = parsed
             pt = f'<trkpt lat="{lat:.6f}" lon="{lon:.6f}"><time>{timestamp}</time><speed>{speed:.2f}</speed></trkpt>'
             points.append(pt)
+
+            print(f"🕐 秒數：{elapsed}s | 📍 {lat:.5f}, {lon:.5f} | 🚀 {speed:.2f} m/s", end='')
+            if last_alt is not None and last_sat is not None:
+                print(f" | ⛰ {last_alt:.1f} m | 📶 衛星：{last_sat}", end='')
+            print()
+
+    elif line.startswith('$GPGGA'):
+        alt_sat = parse_nmea_gpgga(line)
+        if alt_sat:
+            last_alt, last_sat = alt_sat
 
 if not points:
     print("⚠️ 沒有獲得任何 GPS 資料，GPX 將不儲存")
