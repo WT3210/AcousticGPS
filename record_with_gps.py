@@ -1,7 +1,6 @@
 
 import os
 import time
-import threading
 import subprocess
 from datetime import datetime
 import gpsd
@@ -30,9 +29,9 @@ def close_gpx():
     with open(gpx_path, 'a') as f:
         f.write('  </trkseg></trk>\n</gpx>\n')
 
-def gps_logger(stop_event):
+def start_gps_logger(duration=60):
     gpsd.connect()
-    while not stop_event.is_set():
+    for _ in range(duration):
         try:
             packet = gpsd.get_current()
             if packet.mode >= 2:
@@ -45,24 +44,18 @@ def gps_logger(stop_event):
             pass
         time.sleep(1)
 
-def record_audio(duration=60):
-    print("🎙 開始錄音與 GPS 紀錄... 錄製 {} 秒".format(duration))
-    cmd = ["arecord", "-D", "plughw:1,0", "-f", "S16_LE", "-r", "96000", "-c", "1", "-d", str(duration), wav_path]
-    subprocess.run(cmd)
+def start_audio_record(duration=60):
+    cmd = ["arecord", "-M", "-D", "plughw:0,0", "-f", "S16_LE", "-r", "96000", "-c", "1", "-d", str(duration), wav_path]
+    return subprocess.Popen(cmd)
 
 if __name__ == "__main__":
     os.makedirs(output_dir, exist_ok=True)
     init_gpx()
-    stop_event = threading.Event()
-    gps_thread = threading.Thread(target=gps_logger, args=(stop_event,))
-    gps_thread.start()
 
-    try:
-        record_audio(duration=60)
-    except KeyboardInterrupt:
-        print("\n🛑 偵測到 Ctrl+C，結束錄音與 GPS")
-    finally:
-        stop_event.set()
-        gps_thread.join()
-        close_gpx()
-        print("✅ 錄音與 GPX 儲存完成！")
+    print("🎙 開始錄音與 GPS 紀錄... 錄製 60 秒")
+    audio_proc = start_audio_record(duration=60)
+    start_gps_logger(duration=60)
+    audio_proc.wait()
+
+    close_gpx()
+    print("✅ 錄音與 GPX 儲存完成！")
