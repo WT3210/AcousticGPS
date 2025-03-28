@@ -6,7 +6,7 @@ DURATION=60
 SAMPLERATE=44100
 CHANNELS=1
 DEVICE="plughw:0,0"
-FILENAME="record_$(date +%m%d_%H%M%S)"
+FILENAME="record_$(date +%m%d_%H%M)"
 LOGDIR="./logs"
 mkdir -p $LOGDIR
 
@@ -21,7 +21,7 @@ echo "🎙 開始錄音 $DURATION 秒..."
 arecord -D $DEVICE -f S16_LE -r $SAMPLERATE -c $CHANNELS -d $DURATION "$LOGDIR/$FILENAME.wav" &
 PID_RECORD=$!
 
-sleep 2  # 等待錄音初始化穩定
+sleep 2
 
 echo "🛰 同步啟動 GPS 記錄..."
 python3 record_with_gps.py --duration $DURATION --output "$LOGDIR/$FILENAME.gpx" &
@@ -30,7 +30,6 @@ PID_GPS=$!
 wait $PID_RECORD
 wait $PID_GPS
 
-# 檢查錄音結果大小
 WAVSIZE=$(stat -c%s "$LOGDIR/$FILENAME.wav")
 if [ "$WAVSIZE" -le 100 ]; then
   echo "⚠️ 錄音異常：檔案僅 $WAVSIZE bytes，可能無聲！"
