@@ -1,61 +1,47 @@
-
 import os
 import time
 import subprocess
 from datetime import datetime
-import gpsd
 
-output_dir = os.path.expanduser("~/AcousticRecorder/logs")
-filename_prefix = datetime.now().strftime("record_%Y%m%d_%H%M%S")
-wav_path = os.path.join(output_dir, filename_prefix + ".wav")
-gpx_path = os.path.join(output_dir, filename_prefix + ".gpx")
+# 建立 logs 資料夾
+output_dir = os.path.expanduser("~/AcousticGPS/logs")
+os.makedirs(output_dir, exist_ok=True)
 
-def init_gpx():
-    with open(gpx_path, 'w') as f:
-        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
-        f.write('<gpx version="1.1" creator="PiRecorder" xmlns="http://www.topografix.com/GPX/1/1">\n')
-        f.write('  <trk><name>' + filename_prefix + '</name><trkseg>\n')
+# 時間戳記
+ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+wav_path = os.path.join(output_dir, f"record_{ts}.wav")
+gpx_path = os.path.join(output_dir, f"record_{ts}.gpx")
 
-def append_gpx(lat, lon, ele, speed):
-    now = datetime.utcnow().isoformat() + "Z"
-    with open(gpx_path, 'a') as f:
-        f.write('    <trkpt lat="{:.8f}" lon="{:.8f}">\n'.format(lat, lon))
-        f.write('      <ele>{:.2f}</ele>\n'.format(ele))
-        f.write('      <time>{}</time>\n'.format(now))
-        f.write('      <extensions><speed>{:.2f}</speed></extensions>\n'.format(speed))
-        f.write('    </trkpt>\n')
+# 啟動 GPS 紀錄
+gps_cmd = [
+    "gpspipe", "-w", "-o", gpx_path
+]
+gps_proc = subprocess.Popen(gps_cmd)
+print("🛰️ GPS 紀錄啟動")
 
-def close_gpx():
-    with open(gpx_path, 'a') as f:
-        f.write('  </trkseg></trk>\n</gpx>\n')
+# 等待 GPS 穩定
+time.sleep(3)
 
-def start_gps_logger(duration=60):
-    gpsd.connect()
-    for _ in range(duration):
-        try:
-            packet = gpsd.get_current()
-            if packet.mode >= 2:
-                lat = packet.lat
-                lon = packet.lon
-                ele = packet.alt if packet.alt else 0.0
-                speed = packet.hspeed if packet.hspeed else 0.0
-                append_gpx(lat, lon, ele, speed)
-        except:
-            pass
-        time.sleep(1)
+# 啟動錄音
+rec_cmd = [
+    "arecord", "-D", "plughw:0,0",
+    "-f", "S16_LE", "-r", "96000", "-c", "1",
+    "-d", "60", wav_path
+]
+print("🎙️ 錄音開始")
+rec_proc = subprocess.Popen(rec_cmd)
 
-def start_audio_record(duration=60):
-    cmd = ["arecord", "-M", "-D", "plughw:0,0", "-f", "S16_LE", "-r", "96000", "-c", "1", "-d", str(duration), wav_path]
-    return subprocess.Popen(cmd)
+# 等待錄音結束
+rec_proc.wait()
+gps_proc.terminate()
+print("🛑 錄音與 GPS 結束")
 
-if __name__ == "__main__":
-    os.makedirs(output_dir, exist_ok=True)
-    init_gpx()
-
-    print("🎙 開始錄音與 GPS 紀錄... 錄製 60 秒")
-    audio_proc = start_audio_record(duration=60)
-    start_gps_logger(duration=60)
-    audio_proc.wait()
-
-    close_gpx()
-    print("✅ 錄音與 GPX 儲存完成！")
+# 檢查錄音結果
+if os.path.exists(wav_path):
+    size = os.path.getsize(wav_path)
+    if size < 1000:
+        print(f"⚠️ 錄音異常，檔案過小：{size} bytes，請檢查錄音裝置或驅動")
+    else:
+        print(f"✅ 錄音與 GPX 儲存完成：{size} bytes")
+else:
+    print("❌ 錄音失敗，無檔案")
