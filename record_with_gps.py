@@ -47,11 +47,22 @@ def parse_gga(nmea_line):
         if parts[0].endswith("GGA") and parts[6] != '0':
             lat, lon = parse_nmea_latlon(parts[2], parts[3], parts[4], parts[5])
             alt = float(parts[9])
-            return lat, lon, alt
+            sats = int(parts[7])
+            return lat, lon, alt, sats
     except Exception:
         pass
     return None
 
+
+def parse_rmc(nmea_line):
+    try:
+        parts = nmea_line.split(',')
+        if parts[0].endswith("RMC") and parts[2] == 'A':
+            speed = float(parts[7]) * 0.514444  # knots to m/s
+            return speed
+    except Exception:
+        pass
+    return None
 
 # ---------- GPS Logger ----------
 def gps_logger():
@@ -60,16 +71,22 @@ def gps_logger():
         gpx_file.write(gpx_header)
         with serial.Serial(SERIAL_PORT, 9600, timeout=1) as ser:
             start_time = time.time()
+            current_speed = 0.0
             while time.time() - start_time < DURATION_SECONDS:
                 line = ser.readline().decode(errors='ignore').strip()
                 if line.startswith("$GPGGA"):
                     data = parse_gga(line)
                     if data:
-                        lat, lon, alt = data
+                        lat, lon, alt, sats = data
                         timestamp = datetime.utcnow().isoformat() + 'Z'
                         gpx_file.write(f'      <trkpt lat="{lat}" lon="{lon}"><ele>{alt}</ele><time>{timestamp}</time></trkpt>\n')
-                        print(f"🛰 {timestamp} Lat: {lat:.6f}, Lon: {lon:.6f}, Alt: {alt:.1f} m")
-                time.sleep(1)
+                        elapsed = int(time.time() - start_time)
+                        print(f"🕒 {elapsed:>2} / {DURATION_SECONDS} 秒｜📍 {lat:.5f}, {lon:.5f}｜🚀 {current_speed:.2f} m/s｜⛰️ {alt:.1f} m｜📶 衛星 {sats}")
+                elif line.startswith("$GPRMC"):
+                    speed = parse_rmc(line)
+                    if speed is not None:
+                        current_speed = speed
+                time.sleep(0.2)
         gpx_file.write(gpx_footer)
     print("🛰 GPS 紀錄結束")
 
